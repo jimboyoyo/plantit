@@ -6,11 +6,12 @@
 <title>Trädplantering</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; }
 #app { display: flex; flex-direction: column; height: 100vh; }
-
 #topbar {
   display: flex; align-items: center; gap: 10px; padding: 9px 14px;
   background: white; border-bottom: 1px solid #e0e0e0; flex-wrap: wrap;
@@ -19,7 +20,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 #topbar h2 { font-size: 15px; font-weight: 600; color: #111; flex: 1; }
 .stat { font-size: 12px; color: #666; white-space: nowrap; }
 .stat b { color: #111; }
-
 #toolbar {
   display: flex; gap: 7px; padding: 8px 14px; background: white;
   border-bottom: 1px solid #e0e0e0; flex-wrap: wrap; align-items: center;
@@ -34,7 +34,6 @@ button.active-red { background: #e74c3c; color: white; border-color: #c0392b; }
 button.purple { background: #534AB7; color: white; border-color: #3C3489; }
 button.active-purple { background: #3C3489; color: white; border-color: #2a2460; }
 button:disabled { opacity: 0.4; cursor: default; }
-
 #config-panel {
   display: flex; gap: 10px; padding: 8px 14px; background: #fafafa;
   border-bottom: 1px solid #e0e0e0; align-items: center; flex-wrap: wrap;
@@ -50,16 +49,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 }
 .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 #spacing-wrap { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #444; }
-
 #map { flex: 1; z-index: 0; }
-
 #bottombar {
   padding: 9px 14px; background: white; border-top: 1px solid #e0e0e0;
   font-size: 13px; min-height: 42px; box-shadow: 0 -1px 4px rgba(0,0,0,0.06);
 }
 #status { color: #555; margin-bottom: 2px; }
 #nearest-info { color: #111; font-weight: 600; font-size: 14px; }
-
 .legend {
   display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
   padding: 5px 14px; background: #fafafa; border-bottom: 1px solid #eee;
@@ -68,6 +64,13 @@ button:disabled { opacity: 0.4; cursor: default; }
 .leg { display: flex; align-items: center; gap: 5px; }
 .leg-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 #corner-count { margin-left: auto; color: #888; font-size: 12px; }
+#sync-indicator {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #eee; color: #888; white-space: nowrap;
+}
+#sync-indicator.synced  { background: #d4edda; color: #276238; }
+#sync-indicator.syncing { background: #fff3cd; color: #856404; }
+#sync-indicator.error   { background: #f8d7da; color: #842029; }
 </style>
 </head>
 <body>
@@ -78,6 +81,7 @@ button:disabled { opacity: 0.4; cursor: default; }
     <span class="stat">Kvar: <b id="count-left">0</b></span>
     <span class="stat">Ek: <b id="count-ek">0</b></span>
     <span class="stat">Lind: <b id="count-lind">0</b></span>
+    <span id="sync-indicator">⏳ ansluter...</span>
   </div>
 
   <div id="config-panel">
@@ -116,12 +120,33 @@ button:disabled { opacity: 0.4; cursor: default; }
   <div id="map"></div>
 
   <div id="bottombar">
-    <div id="status">Ange inställningar, klicka "Markera hörn" och välj 4 hörn på kartan.</div>
+    <div id="status">Ansluter till databasen...</div>
     <div id="nearest-info"></div>
   </div>
 </div>
 
 <script>
+// ── Firebase ──────────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDL7OxXT9FcRMU4EKmJASVfahzKq7ohDSc",
+  authDomain: "plantit-620e2.firebaseapp.com",
+  databaseURL: "https://plantit-620e2-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "plantit-620e2",
+  storageBucket: "plantit-620e2.firebasestorage.app",
+  messagingSenderId: "275679496346",
+  appId: "1:275679496346:web:0ef9662c364b329adc7723"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const SESSION_REF = db.ref('tradplantering/session');
+
+function setSyncStatus(state, msg) {
+  const el = document.getElementById('sync-indicator');
+  el.className = state;
+  el.textContent = msg;
+}
+
+// ── Map ───────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true }).setView([59.22, 17.95], 16);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 22, maxNativeZoom: 19, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>'
@@ -132,92 +157,15 @@ const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/servic
 osmLayer.addTo(map);
 L.control.layers({ "Karta": osmLayer, "Satellit": satLayer }).addTo(map);
 
+// ── State ─────────────────────────────────────────────────────
 let cornerMarkers = [], cornerLatLngs = [], gridPoints = [];
 let areaPolygon = null, placingCorners = false;
 let gpsMarker = null, gpsAccCircle = null, gpsWatch = null;
 let gpsActive = false, nearestIdx = -1;
+let remoteUpdateInProgress = false; // prevent echo loops
 
 function setStatus(m) { document.getElementById('status').textContent = m; }
 function setNearest(m) { document.getElementById('nearest-info').textContent = m; }
-
-// --- Persist to localStorage ---
-const STORAGE_KEY = 'tradplantering_v1';
-
-function saveState() {
-  try {
-    const state = {
-      corners: cornerLatLngs.map(p => ({ lat: p.lat, lng: p.lng })),
-      settings: {
-        ek: document.getElementById('input-ek').value,
-        lind: document.getElementById('input-lind').value,
-        spacing: document.getElementById('input-spacing').value,
-        pattern: document.getElementById('pattern-select').value
-      },
-      points: gridPoints.map(p => ({
-        lat: p.latlng.lat, lng: p.latlng.lng,
-        species: p.species, planted: p.planted
-      }))
-    };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch(e) { console.warn('Save failed', e); }
-}
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return;
-    const state = JSON.parse(raw);
-
-    // Restore settings
-    if (state.settings) {
-      document.getElementById('input-ek').value      = state.settings.ek;
-      document.getElementById('input-lind').value    = state.settings.lind;
-      document.getElementById('input-spacing').value = state.settings.spacing;
-      document.getElementById('pattern-select').value = state.settings.pattern;
-      onPatternChange();
-    }
-
-    // Restore corners
-    if (state.corners && state.corners.length === 4) {
-      state.corners.forEach((c, idx) => {
-        const latlng = L.latLng(c.lat, c.lng);
-        cornerLatLngs.push(latlng);
-        const m = L.circleMarker(latlng, {
-          radius: 9, color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 1, weight: 2
-        }).bindTooltip('Hörn ' + (idx+1), { permanent: true, direction: 'top' }).addTo(map);
-        cornerMarkers.push(m);
-      });
-      if (areaPolygon) map.removeLayer(areaPolygon);
-      areaPolygon = L.polygon(cornerLatLngs, {
-        color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 0.1, weight: 2, dashArray: '6,4'
-      }).addTo(map);
-      map.fitBounds(areaPolygon.getBounds(), { padding: [30, 30] });
-      document.getElementById('corner-count').textContent = '4/4 hörn';
-      document.getElementById('gen-btn').disabled = false;
-    }
-
-    // Restore grid points
-    if (state.points && state.points.length > 0) {
-      state.points.forEach((p, i) => {
-        const latlng = L.latLng(p.lat, p.lng);
-        const color = p.planted ? '#3B6D11' : (p.species === 'ek' ? '#378ADD' : '#D85A30');
-        const radius = p.planted ? 5 : 7;
-        const opacity = p.planted ? 0.7 : 0.85;
-        const m = L.circleMarker(latlng, {
-          radius, color, fillColor: color, fillOpacity: opacity, weight: 1.5
-        }).addTo(map);
-        m.on('click', () => markPlanted(i));
-        m.bindTooltip((p.species === 'ek' ? 'Ek' : 'Lind') + ' #' + (i + 1));
-        gridPoints.push({ latlng, species: p.species, planted: p.planted, marker: m });
-      });
-      document.getElementById('gen-btn').disabled = true;
-      document.getElementById('regen-btn').disabled = false;
-      updateCounts();
-      const done = gridPoints.filter(p => p.planted).length;
-      setStatus('Återställt: ' + gridPoints.length + ' punkter, ' + done + ' planterade. Tryck en punkt för att markera planterad.');
-    }
-  } catch(e) { console.warn('Load failed', e); }
-}
 
 function onPatternChange() {
   const p = document.getElementById('pattern-select').value;
@@ -225,10 +173,133 @@ function onPatternChange() {
 }
 onPatternChange();
 
-// --- Auto-load on startup ---
-loadState();
+// ── Firebase sync ─────────────────────────────────────────────
+function saveToFirebase() {
+  if (remoteUpdateInProgress) return;
+  setSyncStatus('syncing', '⏫ sparar...');
+  const state = {
+    corners: cornerLatLngs.map(p => ({ lat: p.lat, lng: p.lng })),
+    settings: {
+      ek: document.getElementById('input-ek').value,
+      lind: document.getElementById('input-lind').value,
+      spacing: document.getElementById('input-spacing').value,
+      pattern: document.getElementById('pattern-select').value
+    },
+    points: gridPoints.map(p => ({
+      lat: p.latlng.lat, lng: p.latlng.lng,
+      species: p.species, planted: p.planted
+    }))
+  };
+  SESSION_REF.set(state)
+    .then(() => setSyncStatus('synced', '✓ synkad'))
+    .catch(() => setSyncStatus('error', '✗ fel'));
+}
 
-// --- Corner placement ---
+// Only save planted status changes individually for speed
+function savePlantedToFirebase(i) {
+  if (remoteUpdateInProgress) return;
+  setSyncStatus('syncing', '⏫ sparar...');
+  SESSION_REF.child('points/' + i + '/planted').set(gridPoints[i].planted)
+    .then(() => setSyncStatus('synced', '✓ synkad'))
+    .catch(() => setSyncStatus('error', '✗ fel'));
+}
+
+// ── Restore from Firebase data ────────────────────────────────
+function applyState(state) {
+  // Clear existing
+  cornerMarkers.forEach(m => map.removeLayer(m)); cornerMarkers = []; cornerLatLngs = [];
+  gridPoints.forEach(p => map.removeLayer(p.marker)); gridPoints = []; nearestIdx = -1;
+  if (areaPolygon) { map.removeLayer(areaPolygon); areaPolygon = null; }
+
+  // Settings
+  if (state.settings) {
+    document.getElementById('input-ek').value       = state.settings.ek;
+    document.getElementById('input-lind').value     = state.settings.lind;
+    document.getElementById('input-spacing').value  = state.settings.spacing;
+    document.getElementById('pattern-select').value = state.settings.pattern;
+    onPatternChange();
+  }
+
+  // Corners
+  if (state.corners && state.corners.length === 4) {
+    state.corners.forEach((c, idx) => {
+      const latlng = L.latLng(c.lat, c.lng);
+      cornerLatLngs.push(latlng);
+      const m = L.circleMarker(latlng, {
+        radius: 9, color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 1, weight: 2
+      }).bindTooltip('Hörn ' + (idx + 1), { permanent: true, direction: 'top' }).addTo(map);
+      cornerMarkers.push(m);
+    });
+    areaPolygon = L.polygon(cornerLatLngs, {
+      color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 0.1, weight: 2, dashArray: '6,4'
+    }).addTo(map);
+    map.fitBounds(areaPolygon.getBounds(), { padding: [30, 30] });
+    document.getElementById('corner-count').textContent = '4/4 hörn';
+    document.getElementById('gen-btn').disabled = false;
+  }
+
+  // Points
+  if (state.points && state.points.length > 0) {
+    state.points.forEach((p, i) => {
+      const latlng = L.latLng(p.lat, p.lng);
+      const color = p.planted ? '#3B6D11' : (p.species === 'ek' ? '#378ADD' : '#D85A30');
+      const radius = p.planted ? 5 : 7;
+      const opacity = p.planted ? 0.7 : 0.85;
+      const m = L.circleMarker(latlng, { radius, color, fillColor: color, fillOpacity: opacity, weight: 1.5 }).addTo(map);
+      m.on('click', () => markPlanted(i));
+      m.bindTooltip((p.species === 'ek' ? 'Ek' : 'Lind') + ' #' + (i + 1));
+      gridPoints.push({ latlng, species: p.species, planted: p.planted, marker: m });
+    });
+    document.getElementById('gen-btn').disabled = true;
+    document.getElementById('regen-btn').disabled = false;
+    const done = gridPoints.filter(p => p.planted).length;
+    setStatus(gridPoints.length + ' punkter laddade, ' + done + ' planterade.');
+  } else if (state.corners) {
+    setStatus('4 hörn laddade. Klicka "Generera".');
+  }
+  updateCounts();
+}
+
+// ── Listen for real-time changes ──────────────────────────────
+// Only update planted markers on remote change (not full redraw)
+SESSION_REF.on('value', snapshot => {
+  const state = snapshot.val();
+  if (!state) {
+    setSyncStatus('synced', '✓ tom databas');
+    setStatus('Ange inställningar, klicka "Markera hörn" och välj 4 hörn på kartan.');
+    return;
+  }
+  setSyncStatus('synced', '✓ synkad');
+
+  // If grid already loaded, only sync planted states to avoid full redraw
+  if (gridPoints.length > 0 && state.points && state.points.length === gridPoints.length) {
+    remoteUpdateInProgress = true;
+    let changed = false;
+    state.points.forEach((p, i) => {
+      if (gridPoints[i].planted !== p.planted) {
+        gridPoints[i].planted = p.planted;
+        updateMarkerStyle(i, i === nearestIdx);
+        changed = true;
+      }
+    });
+    if (changed) updateCounts();
+    remoteUpdateInProgress = false;
+    return;
+  }
+
+  // Full restore (first load or grid changed)
+  remoteUpdateInProgress = true;
+  applyState(state);
+  remoteUpdateInProgress = false;
+});
+
+// ── Connection indicator ──────────────────────────────────────
+db.ref('.info/connected').on('value', snap => {
+  if (snap.val()) setSyncStatus('synced', '✓ ansluten');
+  else setSyncStatus('error', '✗ offline');
+});
+
+// ── Corner placement ──────────────────────────────────────────
 function toggleCornerMode() {
   placingCorners = !placingCorners;
   const btn = document.getElementById('corner-btn');
@@ -250,7 +321,6 @@ map.on('click', function(e) {
   }).bindTooltip('Hörn ' + n, { permanent: true, direction: 'top' }).addTo(map);
   cornerMarkers.push(m);
   document.getElementById('corner-count').textContent = n + '/4 hörn';
-
   if (n === 4) {
     placingCorners = false;
     document.getElementById('corner-btn').textContent = '📍 Markera hörn';
@@ -267,7 +337,7 @@ map.on('click', function(e) {
   }
 });
 
-// --- Point in polygon ---
+// ── Point in polygon ──────────────────────────────────────────
 function pointInPolygon(pt, poly) {
   let inside = false;
   const x = pt.lat, y = pt.lng;
@@ -278,127 +348,92 @@ function pointInPolygon(pt, poly) {
   return inside;
 }
 
-// --- Grid generators ---
-// All return array of {lat, lng} candidate points inside polygon, up to maxPts
+// ── Grid generators ───────────────────────────────────────────
 function meterDeltas(centerLat, spacing) {
-  const mLat = 111320;
-  const mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
-  return { dLat: spacing / mLat, dLng: spacing / mLng };
+  return {
+    dLat: spacing / 111320,
+    dLng: spacing / (111320 * Math.cos(centerLat * Math.PI / 180))
+  };
 }
-
-function genSquare(poly, spacing, maxPts) {
+function bbox(poly) {
   const lats = poly.map(p => p.lat), lngs = poly.map(p => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const { dLat, dLng } = meterDeltas((minLat + maxLat) / 2, spacing);
+  return { minLat: Math.min(...lats), maxLat: Math.max(...lats), minLng: Math.min(...lngs), maxLng: Math.max(...lngs) };
+}
+function genSquare(poly, spacing, max) {
+  const { minLat, maxLat, minLng, maxLng } = bbox(poly);
+  const { dLat, dLng } = meterDeltas((minLat+maxLat)/2, spacing);
   const pts = [];
-  for (let lat = minLat; lat <= maxLat + dLat * 0.5; lat += dLat) {
-    for (let lng = minLng; lng <= maxLng + dLng * 0.5; lng += dLng) {
+  for (let lat = minLat; lat <= maxLat+dLat*.5; lat += dLat)
+    for (let lng = minLng; lng <= maxLng+dLng*.5; lng += dLng) {
       const p = L.latLng(lat, lng);
-      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= maxPts) return pts; }
+      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= max) return pts; }
     }
-  }
   return pts;
 }
-
-function genBrick(poly, spacing, maxPts) {
-  const lats = poly.map(p => p.lat), lngs = poly.map(p => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const { dLat, dLng } = meterDeltas((minLat + maxLat) / 2, spacing);
-  const pts = [];
-  let row = 0;
-  for (let lat = minLat; lat <= maxLat + dLat * 0.5; lat += dLat) {
-    const offset = (row % 2 === 0) ? 0 : dLng * 0.5;
-    for (let lng = minLng + offset; lng <= maxLng + dLng * 0.5; lng += dLng) {
+function genBrick(poly, spacing, max) {
+  const { minLat, maxLat, minLng, maxLng } = bbox(poly);
+  const { dLat, dLng } = meterDeltas((minLat+maxLat)/2, spacing);
+  const pts = []; let row = 0;
+  for (let lat = minLat; lat <= maxLat+dLat*.5; lat += dLat) {
+    const off = (row%2===0) ? 0 : dLng*.5;
+    for (let lng = minLng+off; lng <= maxLng+dLng*.5; lng += dLng) {
       const p = L.latLng(lat, lng);
-      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= maxPts) return pts; }
+      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= max) return pts; }
     }
     row++;
   }
   return pts;
 }
-
-function genHex(poly, spacing, maxPts) {
-  // Hexagonal close-packing: row spacing = spacing * sqrt(3)/2, col offset every other row
-  const lats = poly.map(p => p.lat), lngs = poly.map(p => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const centerLat = (minLat + maxLat) / 2;
-  const mLat = 111320;
-  const mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
-  const dLat = (spacing * Math.sqrt(3) / 2) / mLat;
-  const dLng = spacing / mLng;
-  const pts = [];
-  let row = 0;
-  for (let lat = minLat; lat <= maxLat + dLat * 0.5; lat += dLat) {
-    const offset = (row % 2 === 0) ? 0 : dLng * 0.5;
-    for (let lng = minLng + offset; lng <= maxLng + dLng * 0.5; lng += dLng) {
+function genHex(poly, spacing, max) {
+  const { minLat, maxLat, minLng, maxLng } = bbox(poly);
+  const centerLat = (minLat+maxLat)/2;
+  const dLat = (spacing * Math.sqrt(3)/2) / 111320;
+  const dLng = spacing / (111320 * Math.cos(centerLat * Math.PI / 180));
+  const pts = []; let row = 0;
+  for (let lat = minLat; lat <= maxLat+dLat*.5; lat += dLat) {
+    const off = (row%2===0) ? 0 : dLng*.5;
+    for (let lng = minLng+off; lng <= maxLng+dLng*.5; lng += dLng) {
       const p = L.latLng(lat, lng);
-      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= maxPts) return pts; }
+      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= max) return pts; }
     }
     row++;
   }
   return pts;
 }
-
-function genTriangle(poly, spacing, maxPts) {
-  // Equilateral triangle grid: alternating rows offset by 1/3
-  const lats = poly.map(p => p.lat), lngs = poly.map(p => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const centerLat = (minLat + maxLat) / 2;
-  const mLat = 111320;
-  const mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
-  const dLat = (spacing * Math.sqrt(3) / 2) / mLat;
-  const dLng = spacing / mLng;
-  const pts = [];
-  let row = 0;
-  for (let lat = minLat; lat <= maxLat + dLat * 0.5; lat += dLat) {
-    const offset = (row % 3 === 0) ? 0 : (row % 3 === 1) ? dLng / 3 : dLng * 2 / 3;
-    for (let lng = minLng + offset; lng <= maxLng + dLng * 0.5; lng += dLng) {
+function genTriangle(poly, spacing, max) {
+  const { minLat, maxLat, minLng, maxLng } = bbox(poly);
+  const centerLat = (minLat+maxLat)/2;
+  const dLat = (spacing * Math.sqrt(3)/2) / 111320;
+  const dLng = spacing / (111320 * Math.cos(centerLat * Math.PI / 180));
+  const pts = []; let row = 0;
+  for (let lat = minLat; lat <= maxLat+dLat*.5; lat += dLat) {
+    const off = (row%3===0) ? 0 : (row%3===1) ? dLng/3 : dLng*2/3;
+    for (let lng = minLng+off; lng <= maxLng+dLng*.5; lng += dLng) {
       const p = L.latLng(lat, lng);
-      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= maxPts) return pts; }
+      if (pointInPolygon(p, poly)) { pts.push(p); if (pts.length >= max) return pts; }
     }
     row++;
   }
   return pts;
 }
-
 function genEven(poly, total) {
-  // Poisson-disc-like: place points as evenly as possible across the area
-  // Approach: estimate spacing from area, then use hex grid with that spacing
-  const lats = poly.map(p => p.lat), lngs = poly.map(p => p.lng);
-  const minLat = Math.min(...lats), maxLat = Math.max(...lats);
-  const minLng = Math.min(...lngs), maxLng = Math.max(...lngs);
-  const centerLat = (minLat + maxLat) / 2;
-  const mLat = 111320;
-  const mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
-  const heightM = (maxLat - minLat) * mLat;
-  const widthM = (maxLng - minLng) * mLng;
-
-  // Compute polygon area via shoelace
+  const { minLat, maxLat, minLng, maxLng } = bbox(poly);
+  const centerLat = (minLat+maxLat)/2;
+  const mLat = 111320, mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
   let area = 0;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+  for (let i = 0, j = poly.length-1; i < poly.length; j = i++)
     area += (poly[i].lng + poly[j].lng) * (poly[i].lat - poly[j].lat);
-  }
-  const areaM2 = Math.abs(area) * 0.5 * mLat * mLng;
-
-  // For hex packing, area per point = spacing^2 * sqrt(3)/2
-  // spacing = sqrt(areaM2 / total / (sqrt(3)/2))
-  const spacing = Math.sqrt(areaM2 / total / (Math.sqrt(3) / 2));
-
-  // Generate hex grid with this spacing and take exactly 'total' points
-  const candidates = genHex(poly, spacing, total * 3);
-  // Shuffle for even feel, then take total
-  for (let i = candidates.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+  const areaM2 = Math.abs(area) * .5 * mLat * mLng;
+  const spacing = Math.sqrt(areaM2 / total / (Math.sqrt(3)/2));
+  const candidates = genHex(poly, spacing, total*3);
+  for (let i = candidates.length-1; i > 0; i--) {
+    const j = Math.floor(Math.random()*(i+1));
     [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
   }
   return candidates.slice(0, total);
 }
 
-// --- Main generate ---
+// ── Generate grid ─────────────────────────────────────────────
 function generateGrid() {
   gridPoints.forEach(p => map.removeLayer(p.marker));
   gridPoints = []; nearestIdx = -1;
@@ -416,61 +451,49 @@ function generateGrid() {
   else if (pattern === 'triangle') candidates = genTriangle(cornerLatLngs, spacing, total);
   else if (pattern === 'even')     candidates = genEven(cornerLatLngs, total);
 
-  // Trim to exact counts
   const pts = candidates.slice(0, total);
   let ekCount = 0, lindCount = 0;
-
   pts.forEach((latlng, idx) => {
     let species;
-    if (ekCount < totalEk && lindCount < totalLind) {
-      species = (idx % 2 === 0) ? 'ek' : 'lind';
-    } else if (ekCount < totalEk) {
-      species = 'ek';
-    } else {
-      species = 'lind';
-    }
+    if (ekCount < totalEk && lindCount < totalLind) species = (idx%2===0) ? 'ek' : 'lind';
+    else if (ekCount < totalEk) species = 'ek';
+    else species = 'lind';
     if (species === 'ek') ekCount++; else lindCount++;
-
     const color = species === 'ek' ? '#378ADD' : '#D85A30';
     const i = gridPoints.length;
-    const m = L.circleMarker(latlng, {
-      radius: 7, color, fillColor: color, fillOpacity: 0.85, weight: 1.5
-    }).addTo(map);
+    const m = L.circleMarker(latlng, { radius: 7, color, fillColor: color, fillOpacity: 0.85, weight: 1.5 }).addTo(map);
     m.on('click', () => markPlanted(i));
-    m.bindTooltip((species === 'ek' ? 'Ek' : 'Lind') + ' #' + (i + 1));
+    m.bindTooltip((species === 'ek' ? 'Ek' : 'Lind') + ' #' + (i+1));
     gridPoints.push({ latlng, species, planted: false, marker: m });
   });
 
   document.getElementById('gen-btn').disabled = true;
   document.getElementById('regen-btn').disabled = false;
   updateCounts();
+
   const patternNames = { square:'kvadrat', brick:'tegel', hex:'hexagon', triangle:'triangel', even:'jämnt fördelat' };
   let spacingInfo = '';
   if (pattern === 'even') {
-    // Calculate actual spacing used
-    const mLat = 111320;
-    const lats = cornerLatLngs.map(p => p.lat), lngs = cornerLatLngs.map(p => p.lng);
-    const centerLat = (Math.min(...lats) + Math.max(...lats)) / 2;
-    const mLng = 111320 * Math.cos(centerLat * Math.PI / 180);
+    const { minLat, maxLat, minLng, maxLng } = bbox(cornerLatLngs);
+    const centerLat = (minLat+maxLat)/2;
+    const mLat = 111320, mLng = 111320*Math.cos(centerLat*Math.PI/180);
     let area = 0;
-    for (let i = 0, j = cornerLatLngs.length - 1; i < cornerLatLngs.length; j = i++) {
+    for (let i = 0, j = cornerLatLngs.length-1; i < cornerLatLngs.length; j = i++)
       area += (cornerLatLngs[i].lng + cornerLatLngs[j].lng) * (cornerLatLngs[i].lat - cornerLatLngs[j].lat);
-    }
-    const areaM2 = Math.abs(area) * 0.5 * mLat * mLng;
-    const actualSpacing = Math.sqrt(areaM2 / total / (Math.sqrt(3) / 2));
-    spacingInfo = ', ~' + actualSpacing.toFixed(1) + ' m avstånd';
+    const areaM2 = Math.abs(area)*.5*mLat*mLng;
+    spacingInfo = ', ~' + Math.sqrt(areaM2/total/(Math.sqrt(3)/2)).toFixed(1) + ' m avstånd';
   }
   setStatus(gridPoints.length + ' punkter (' + patternNames[pattern] + spacingInfo + ', ' + ekCount + ' ek / ' + lindCount + ' lind). Tryck punkt för att markera planterad.');
-  saveState();
+  saveToFirebase();
 }
 
-// --- Mark planted ---
+// ── Mark planted ──────────────────────────────────────────────
 function markPlanted(i) {
   const pt = gridPoints[i];
   pt.planted = !pt.planted;
   updateMarkerStyle(i, i === nearestIdx && !pt.planted);
   updateCounts();
-  saveState();
+  savePlantedToFirebase(i);
   if (gpsActive && gpsMarker) highlightNearest(gpsMarker.getLatLng());
 }
 
@@ -487,55 +510,44 @@ function updateMarkerStyle(i, isNearest) {
 }
 
 function updateCounts() {
-  const done  = gridPoints.filter(p => p.planted).length;
-  const left  = gridPoints.length - done;
-  const ek    = gridPoints.filter(p => p.planted && p.species === 'ek').length;
-  const lind  = gridPoints.filter(p => p.planted && p.species === 'lind').length;
+  const done = gridPoints.filter(p => p.planted).length;
+  const left = gridPoints.length - done;
+  const ek   = gridPoints.filter(p => p.planted && p.species === 'ek').length;
+  const lind = gridPoints.filter(p => p.planted && p.species === 'lind').length;
   document.getElementById('count-done').textContent = done;
   document.getElementById('count-left').textContent = left;
   document.getElementById('count-ek').textContent   = ek;
   document.getElementById('count-lind').textContent = lind;
 }
 
-// --- GPS ---
+// ── GPS ───────────────────────────────────────────────────────
 function toggleGPS() {
   const btn = document.getElementById('gps-btn');
   if (gpsActive) {
     if (gpsWatch !== null) { navigator.geolocation.clearWatch(gpsWatch); gpsWatch = null; }
-    gpsActive = false;
-    btn.textContent = '📡 GPS'; btn.className = 'purple';
+    gpsActive = false; btn.textContent = '📡 GPS'; btn.className = 'purple';
     if (gpsMarker)    { map.removeLayer(gpsMarker);    gpsMarker    = null; }
     if (gpsAccCircle) { map.removeLayer(gpsAccCircle); gpsAccCircle = null; }
     setNearest(''); setStatus('GPS stoppad.');
   } else {
-    if (!navigator.geolocation) { setStatus('GPS stöds inte i denna webbläsare.'); return; }
-    gpsActive = true;
-    btn.textContent = '⏹ Stoppa GPS'; btn.className = 'active-purple';
-    setStatus('Söker GPS-position...');
+    if (!navigator.geolocation) { setStatus('GPS stöds inte.'); return; }
+    gpsActive = true; btn.textContent = '⏹ Stoppa GPS'; btn.className = 'active-purple';
+    setStatus('Söker GPS...');
     gpsWatch = navigator.geolocation.watchPosition(onGPS, onGPSError, {
       enableHighAccuracy: true, maximumAge: 3000, timeout: 15000
     });
   }
 }
-
 function onGPS(pos) {
   const latlng = L.latLng(pos.coords.latitude, pos.coords.longitude);
   const acc = Math.round(pos.coords.accuracy);
   if (!gpsMarker) {
-    gpsMarker = L.circleMarker(latlng, {
-      radius: 10, color: '#534AB7', fillColor: '#7F77DD', fillOpacity: 0.9, weight: 2
-    }).bindTooltip('Du är här').addTo(map);
-    gpsAccCircle = L.circle(latlng, {
-      radius: acc, color: '#534AB7', fillColor: '#7F77DD', fillOpacity: 0.1, weight: 1
-    }).addTo(map);
-  } else {
-    gpsMarker.setLatLng(latlng);
-    gpsAccCircle.setLatLng(latlng); gpsAccCircle.setRadius(acc);
-  }
+    gpsMarker = L.circleMarker(latlng, { radius: 10, color: '#534AB7', fillColor: '#7F77DD', fillOpacity: 0.9, weight: 2 }).bindTooltip('Du är här').addTo(map);
+    gpsAccCircle = L.circle(latlng, { radius: acc, color: '#534AB7', fillColor: '#7F77DD', fillOpacity: 0.1, weight: 1 }).addTo(map);
+  } else { gpsMarker.setLatLng(latlng); gpsAccCircle.setLatLng(latlng); gpsAccCircle.setRadius(acc); }
   setStatus('GPS aktiv — noggrannhet ±' + acc + ' m');
   highlightNearest(latlng);
 }
-
 function onGPSError(err) { setStatus('GPS-fel: ' + err.message); }
 
 function highlightNearest(latlng) {
@@ -552,22 +564,21 @@ function highlightNearest(latlng) {
     nearestIdx = minIdx;
     updateMarkerStyle(minIdx, true);
     const pt = gridPoints[minIdx];
-    setNearest('→ Närmast: ' + (pt.species === 'ek' ? 'Ek' : 'Lind') + ' #' + (minIdx + 1) + ' — ' + Math.round(minDist) + ' m');
+    setNearest('→ Närmast: ' + (pt.species === 'ek' ? 'Ek' : 'Lind') + ' #' + (minIdx+1) + ' — ' + Math.round(minDist) + ' m');
   }
 }
 
-// --- Regenerate (keep boundary, clear only grid) ---
+// ── Regenerate ────────────────────────────────────────────────
 function regenerateGrid() {
   gridPoints.forEach(p => map.removeLayer(p.marker));
   gridPoints = []; nearestIdx = -1;
-  updateCounts();
-  setNearest('');
+  updateCounts(); setNearest('');
   generateGrid();
 }
 
-// --- Clear ---
+// ── Clear all ─────────────────────────────────────────────────
 function clearAll() {
-  if (gridPoints.length > 0 && !confirm('Börja om från början? All data raderas.')) return;
+  if (gridPoints.length > 0 && !confirm('Börja om från början? All data raderas för ALLA användare.')) return;
   cornerMarkers.forEach(m => map.removeLayer(m)); cornerMarkers = []; cornerLatLngs = [];
   gridPoints.forEach(p => map.removeLayer(p.marker)); gridPoints = []; nearestIdx = -1;
   if (areaPolygon)  { map.removeLayer(areaPolygon);  areaPolygon  = null; }
@@ -583,7 +594,7 @@ function clearAll() {
   updateCounts();
   setStatus('Ange inställningar, klicka "Markera hörn" och välj 4 hörn på kartan.');
   setNearest('');
-  localStorage.removeItem(STORAGE_KEY);
+  SESSION_REF.remove();
 }
 </script>
 </body>
