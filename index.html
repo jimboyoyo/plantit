@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="sv">
 <head>
@@ -151,9 +152,8 @@ const map = L.map('map', { zoomControl: true }).setView([59.22, 17.95], 16);
 const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 22, maxNativeZoom: 19, attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a>'
 });
-const satLayer = L.tileLayer('https://api.mapbox.com/styles/v1/mapbox/satellite-v9/tiles/{z}/{x}/{y}?access_token=pk.eyJ1IjoiamltYm95b3lvIiwiYSI6ImNtcXVvdDI4ZzBtNnYycnNiNWhzejdwY2MifQ.Fyp7V_Iu2yChsgzy4BNJ9w', {
-  maxZoom: 22, maxNativeZoom: 22, tileSize: 512, zoomOffset: -1,
-  attribution: '© <a href="https://mapbox.com">Mapbox</a> © <a href="https://openstreetmap.org">OpenStreetMap</a>'
+const satLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+  maxZoom: 22, maxNativeZoom: 19, attribution: 'Imagery © Esri'
 });
 osmLayer.addTo(map);
 L.control.layers({ "Karta": osmLayer, "Satellit": satLayer }).addTo(map);
